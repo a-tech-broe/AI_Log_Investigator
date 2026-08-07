@@ -1,0 +1,8 @@
+-r requirements.txt
+
+boto3==1.40.47
+pytest==8.4.2
+pytest-cov==6.2.1
+moto[ecs,cloudwatch,s3,sns,secretsmanager]==5.1.9
+respx==0.22.0
+ruff==0.14.0

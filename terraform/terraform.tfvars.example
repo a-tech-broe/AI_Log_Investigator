@@ -1,0 +1,56 @@
+# Secrets are never set here — populate the Secrets Manager secret created by
+# `terraform apply` instead. Every value below is non-sensitive configuration.
+#
+#   Local use:  copy to terraform.tfvars   (git-ignored, auto-loaded)
+#   CI use:     copy to prod.tfvars        (committed; the deploy workflow
+#               passes -var-file="<environment>.tfvars")
+
+aws_region  = "us-east-1"
+environment = "prod"
+
+# --- What to investigate ------------------------------------------------------
+
+ecs_cluster_name = "prod-ecs"
+
+# Scope IAM to specific clusters. Leave empty to allow account-wide ECS reads.
+ecs_cluster_arns = [
+  "arn:aws:ecs:us-east-1:123456789012:cluster/prod-ecs",
+]
+
+# ARN suffixes, not full ARNs — CloudWatch uses these as metric dimensions.
+alb_arn_suffix          = "app/prod-alb/1234567890abcdef"
+target_group_arn_suffix = "targetgroup/payment-api/abcdef1234567890"
+
+lookback_minutes = 15
+
+# --- Splunk / Grafana ---------------------------------------------------------
+
+splunk_host  = "https://splunk.example.com:8089"
+splunk_index = "prod"
+grafana_url  = "https://grafana.example.com"
+
+# --- Bedrock ------------------------------------------------------------------
+
+bedrock_model_id = "anthropic.claude-opus-5"
+bedrock_effort   = "high"
+
+# Account-wide singleton per region — leave false if another stack owns it.
+enable_bedrock_invocation_logging = false
+
+# --- Notifications ------------------------------------------------------------
+
+slack_channel           = "#incidents"
+ops_email_subscriptions = ["sre-oncall@example.com"]
+
+# --- Routing ------------------------------------------------------------------
+
+create_event_bus  = true
+event_source_name = "grafana.alerting"
+
+# --- Lambda -------------------------------------------------------------------
+
+lambda_memory_mb            = 1024
+lambda_timeout_seconds      = 300
+lambda_reserved_concurrency = 5
+log_retention_days          = 30
+log_level                   = "INFO"
