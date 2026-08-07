@@ -113,12 +113,15 @@ jobs:
             exit 1
           fi
 
+      # -var-file comes first on purpose: Terraform applies -var and -var-file
+      # in command-line order, so the explicit flags below win over anything the
+      # tfvars file happens to set for region or environment.
       - name: Plan
         run: |
           terraform -chdir=terraform plan -input=false -out=tfplan \
+            -var-file="${TF_ENVIRONMENT}.tfvars" \
             -var="environment=${TF_ENVIRONMENT}" \
-            -var="aws_region=${AWS_REGION}" \
-            -var-file="${TF_ENVIRONMENT}.tfvars"
+            -var="aws_region=${AWS_REGION}"
 
       - name: Render plan summary
         run: |
@@ -148,6 +151,7 @@ jobs:
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET || vars.TF_STATE_BUCKET }}
     outputs:
       function_name: ${{ steps.outputs.outputs.function_name }}
+      secret_arn: ${{ steps.outputs.outputs.secret_arn }}
     steps:
       - uses: actions/checkout@v4
 
@@ -181,6 +185,52 @@ jobs:
         id: outputs
         run: |
           echo "function_name=$(terraform -chdir=terraform output -raw lambda_function_name)" >> "$GITHUB_OUTPUT"
+          echo "secret_arn=$(terraform -chdir=terraform output -raw secret_arn)" >> "$GITHUB_OUTPUT"
+
+      # Push credentials held in GitHub into Secrets Manager, which is what the
+      # Lambda actually reads at runtime. Values are merged, so keys managed
+      # elsewhere survive; an unset GitHub secret leaves its stored value alone
+      # rather than blanking it.
+      #
+      # This runs before the code update in `publish`, so the new containers
+      # start with the new values (secrets are cached per container).
+      - name: Sync credentials to Secrets Manager
+        env:
+          SECRET_ARN: ${{ steps.outputs.outputs.secret_arn }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SPLUNK_TOKEN: ${{ secrets.SPLUNK_TOKEN }}
+          GRAFANA_TOKEN: ${{ secrets.GRAFANA_TOKEN }}
+        run: |
+          umask 077
+          current=$(mktemp); updates=$(mktemp); merged=$(mktemp)
+          trap 'rm -f "$current" "$updates" "$merged"' EXIT
+
+          # jq reads from the environment, so no secret ever appears in argv.
+          jq -n '{
+            slack_webhook_url: env.SLACK_WEBHOOK_URL,
+            slack_bot_token:   env.SLACK_BOT_TOKEN,
+            splunk_token:      env.SPLUNK_TOKEN,
+            grafana_token:     env.GRAFANA_TOKEN
+          } | with_entries(select(.value != null and .value != ""))' > "$updates"
+
+          count=$(jq 'length' "$updates")
+          if [ "$count" -eq 0 ]; then
+            echo "No credential secrets set in GitHub; leaving Secrets Manager untouched."
+            exit 0
+          fi
+
+          aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" \
+            --query SecretString --output text > "$current" 2>/dev/null || true
+          jq empty "$current" >/dev/null 2>&1 || echo '{}' > "$current"
+
+          jq -s '.[0] * .[1]' "$current" "$updates" > "$merged"
+
+          aws secretsmanager put-secret-value \
+            --secret-id "$SECRET_ARN" --secret-string "file://$merged" >/dev/null
+
+          echo "Synced from GitHub: $(jq -r 'keys | join(", ")' "$updates")"
+          echo "Keys now present:   $(jq -r 'keys | join(", ")' "$merged")"
 
   publish:
     name: Publish Lambda code
