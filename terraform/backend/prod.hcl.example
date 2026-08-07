@@ -1,8 +1,12 @@
 # Copy to prod.hcl and run:
 #   terraform init -backend-config=backend/prod.hcl
 #
-# The state bucket and lock table are bootstrapped outside this stack so that
-# destroying the stack can never destroy its own state.
+# The state bucket is bootstrapped outside this stack so that destroying the
+# stack can never destroy its own state. Enable versioning on it.
+#
+# `use_lockfile` is S3-native locking (Terraform >= 1.10): the lock is a
+# .tflock object held via conditional writes. There is no DynamoDB lock table —
+# the older `dynamodb_table` argument is deprecated and not used here.
 
 bucket       = "your-terraform-state-bucket"
 key          = "ai-log-investigator/prod/terraform.tfstate"
