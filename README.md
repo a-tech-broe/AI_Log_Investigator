@@ -430,3 +430,88 @@ Recommended implementation order
 8. Automated tests with simulated production incidents
 
 This project would be production-grade, demonstrate modern AI-assisted SRE practices, and make a strong portfolio piece for senior DevOps/SRE or Platform Engineering roles.
+
+---
+
+# Getting Started
+
+## Repository layout
+
+```
+lambda/                  Application code (the deployment package root)
+  app.py                 Handler: parse → collect → analyze → notify
+  collectors/            ecs, cloudwatch, splunk, grafana
+  ai/                    prompt construction + Bedrock inference
+  notifications/         Slack Block Kit card
+  utils/                 config, structured logging, alert parsing
+terraform/               Root module + modules/{lambda,eventbridge,iam,
+                         secrets-manager,cloudwatch,s3,sns,bedrock}
+tests/                   pytest suite, incl. simulated production incidents
+scripts/build_lambda.sh  Reproducible deployment-package build
+.github/workflows/       ci.yml (lint/test/package), deploy.yml (plan→approve→apply)
+```
+
+## Local development
+
+```bash
+make install     # create .venv and install dev dependencies
+make check       # ruff lint + format check + pytest
+make build       # build build/lambda.zip
+```
+
+The build targets `manylinux2014_x86_64`, so the zip contains Linux binaries
+and will not import on macOS — that is expected. CI verifies the import on
+Linux.
+
+## Deploying
+
+```bash
+cp terraform/terraform.tfvars.example terraform/terraform.tfvars   # edit
+cp terraform/backend/prod.hcl.example terraform/backend/prod.hcl   # edit
+
+make build
+terraform -chdir=terraform init -backend-config=backend/prod.hcl
+terraform -chdir=terraform plan -out=tfplan
+terraform -chdir=terraform apply tfplan
+```
+
+`terraform output post_apply_checklist` lists the manual steps that remain
+(populating the secret, confirming SNS subscriptions, pointing Grafana at the
+event bus, and requesting Bedrock model access).
+
+For CI deploys, set the repository variables `AWS_REGION`, `TF_STATE_BUCKET`,
+`LAMBDA_ARTIFACT_BUCKET`, the secret `AWS_DEPLOY_ROLE_ARN` (OIDC), and commit a
+non-sensitive `terraform/prod.tfvars`. The `production` GitHub Environment
+provides the approval gate between `plan` and `apply`.
+
+## Configuration
+
+Runtime behavior is environment-driven; Terraform sets these on the function.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ECS_CLUSTER` | — | Cluster used when the alert carries no cluster label |
+| `LOOKBACK_MINUTES` | `15` | Evidence window before the alert fired |
+| `SPLUNK_HOST` / `SPLUNK_INDEX` | — / `prod` | Splunk endpoint and index |
+| `SPLUNK_MAX_EVENTS` | `500` | Events pulled before client-side reduction |
+| `ALB_ARN_SUFFIX` / `TARGET_GROUP_ARN_SUFFIX` | — | Enable ALB metrics |
+| `GRAFANA_URL` | — | Enables the annotation collector |
+| `BEDROCK_MODEL_ID` | `anthropic.claude-opus-5` | Analysis model |
+| `BEDROCK_EFFORT` | `high` | `low`…`max` — reasoning depth vs. cost |
+| `SECRET_ARN` | — | JSON secret: `splunk_token`, `slack_webhook_url`, `slack_bot_token`, `grafana_token` |
+| `EVIDENCE_BUCKET` | — | Archives each investigation; empty disables |
+| `DRY_RUN` | `false` | Build the Slack card without posting it |
+
+## Failure behavior
+
+The investigator degrades rather than going silent:
+
+- A failing collector is recorded as `available: false` and the analysis
+  continues with the remaining evidence — the model is told what is missing
+  instead of reasoning as though the signal were negative.
+- If Bedrock analysis fails, a degraded report carrying the raw evidence is
+  still posted to Slack, and SNS notifies operators.
+- A Slack delivery failure does not fail the invocation.
+- An alert with no service label returns 400 (no retry — retrying cannot fix
+  it); unexpected failures re-raise so EventBridge retries and the alert lands
+  in the DLQ.

@@ -1,0 +1,11 @@
+# Lambda runtime dependencies (packaged into the deployment zip).
+#
+# anthropic >= 0.120 is required: AnthropicBedrockMantle (the Messages-API
+# Bedrock endpoint) does not exist in earlier releases.
+#
+# The [bedrock] extra pulls in boto3/botocore for SigV4 signing. They are
+# deliberately left in the package rather than relying on the runtime's
+# pre-installed copies, so the signing code cannot drift when AWS updates the
+# runtime. Cost is ~19MB zipped, well inside the 50MB limit.
+anthropic[bedrock]==0.120.2
+httpx==0.28.1

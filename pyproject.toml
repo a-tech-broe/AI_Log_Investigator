@@ -1,0 +1,35 @@
+[project]
+name = "ai-log-investigator"
+version = "0.1.0"
+description = "Grafana alert to AI-authored incident report, in one hop."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["lambda"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error::DeprecationWarning:lambda.*"]
+
+[tool.coverage.run]
+source = ["lambda"]
+omit = ["*/__init__.py"]
+
+[tool.coverage.report]
+skip_empty = true
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__.:"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["lambda", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",   # line length is enforced by the formatter, not the linter
+    "B008",   # FastAPI-style default-call rule, irrelevant here
+    "RUF001", # Slack cards use emoji deliberately; they are not typos
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]

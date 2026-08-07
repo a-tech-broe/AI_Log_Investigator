@@ -1,0 +1,216 @@
+name: Deploy
+
+# Pipeline: fmt -> validate -> plan -> manual approval -> apply -> build -> zip
+# -> upload to S3 -> update Lambda.
+#
+# The approval gate is the `production` GitHub Environment: configure it with
+# required reviewers so `apply` cannot run unattended.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [prod, staging]
+        default: prod
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # OIDC federation to AWS — no long-lived keys
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  TERRAFORM_VERSION: "1.14.3"
+  TF_ENVIRONMENT: ${{ inputs.environment || 'prod' }}
+
+jobs:
+  plan:
+    name: Terraform plan
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ env.TF_ENVIRONMENT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Built before plan so source_code_hash reflects the code being deployed.
+      - name: Build deployment zip
+        run: ./scripts/build_lambda.sh
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Format check
+        run: terraform fmt -check -recursive terraform
+
+      - name: Init
+        run: |
+          terraform -chdir=terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=ai-log-investigator/${TF_ENVIRONMENT}/terraform.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Validate
+        run: terraform -chdir=terraform validate
+
+      - name: Check environment tfvars exist
+        run: |
+          if [ ! -f "terraform/${TF_ENVIRONMENT}.tfvars" ]; then
+            echo "::error::terraform/${TF_ENVIRONMENT}.tfvars is missing." \
+                 "Copy terraform/terraform.tfvars.example to it and commit —" \
+                 "it holds non-sensitive configuration only."
+            exit 1
+          fi
+
+      - name: Plan
+        run: |
+          terraform -chdir=terraform plan -input=false -out=tfplan \
+            -var="environment=${TF_ENVIRONMENT}" \
+            -var="aws_region=${{ vars.AWS_REGION }}" \
+            -var-file="${TF_ENVIRONMENT}.tfvars"
+
+      - name: Render plan summary
+        run: |
+          {
+            echo '### Terraform plan (`'"$TF_ENVIRONMENT"'`)'
+            echo '```'
+            terraform -chdir=terraform show -no-color tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The plan file pins exactly what apply will do — apply must never re-plan.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: |
+            terraform/tfplan
+            build/lambda.zip
+          retention-days: 5
+
+  apply:
+    name: Terraform apply
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: production # required reviewers gate this job
+    outputs:
+      function_name: ${{ steps.outputs.outputs.function_name }}
+      artifact_bucket: ${{ steps.outputs.outputs.artifact_bucket }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Init
+        run: |
+          terraform -chdir=terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=ai-log-investigator/${TF_ENVIRONMENT}/terraform.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Apply
+        run: terraform -chdir=terraform apply -input=false -auto-approve tfplan
+
+      - name: Export outputs
+        id: outputs
+        run: |
+          echo "function_name=$(terraform -chdir=terraform output -raw lambda_function_name)" >> "$GITHUB_OUTPUT"
+          echo "artifact_bucket=$(terraform -chdir=terraform output -raw evidence_bucket)" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Publish Lambda code
+    needs: apply
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Rebuilt from the same commit rather than reusing the artifact, so the
+      # published code is provably the code in this ref.
+      - name: Build deployment zip
+        run: ./scripts/build_lambda.sh
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload package to S3
+        id: upload
+        env:
+          BUCKET: ${{ vars.LAMBDA_ARTIFACT_BUCKET }}
+        run: |
+          KEY="lambda/${TF_ENVIRONMENT}/${GITHUB_SHA}.zip"
+          aws s3 cp build/lambda.zip "s3://${BUCKET}/${KEY}"
+          echo "key=${KEY}" >> "$GITHUB_OUTPUT"
+
+      - name: Update function code
+        env:
+          FUNCTION: ${{ needs.apply.outputs.function_name }}
+          BUCKET: ${{ vars.LAMBDA_ARTIFACT_BUCKET }}
+          KEY: ${{ steps.upload.outputs.key }}
+        run: |
+          aws lambda update-function-code \
+            --function-name "$FUNCTION" \
+            --s3-bucket "$BUCKET" \
+            --s3-key "$KEY" \
+            --publish >/dev/null
+          aws lambda wait function-updated --function-name "$FUNCTION"
+
+      - name: Smoke test
+        env:
+          FUNCTION: ${{ needs.apply.outputs.function_name }}
+        run: |
+          # A payload with no service label must be rejected with 400 rather
+          # than starting an investigation — cheap, side-effect-free, and it
+          # proves the handler imports and runs.
+          aws lambda invoke \
+            --function-name "$FUNCTION" \
+            --payload '{"detail":{"alerts":[{"labels":{"alertname":"deploy-smoke-test"}}]}}' \
+            --cli-binary-format raw-in-base64-out \
+            response.json >/dev/null
+          cat response.json
+          grep -q '"statusCode": *400' response.json
+
+      - name: Summary
+        run: |
+          {
+            echo "### Deployed"
+            echo "- Function: \`${{ needs.apply.outputs.function_name }}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Package: \`s3://${{ vars.LAMBDA_ARTIFACT_BUCKET }}/${{ steps.upload.outputs.key }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

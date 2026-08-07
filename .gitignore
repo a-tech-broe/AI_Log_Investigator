@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Build artifacts
+build/
+dist/
+*.zip
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+terraform.tfvars
+!terraform.tfvars.example
+override.tf
+override.tf.json
+
+# Local env / secrets
+.env
+*.pem
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
