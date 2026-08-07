@@ -94,6 +94,54 @@ terraform -chdir=terraform apply tfplan
 3. Point Grafana's contact point at the created event bus.
 4. Request Bedrock model access if it isn't already granted.
 
+### Setting credentials
+
+All third-party credentials live in **one JSON secret** in Secrets Manager,
+which is what the Lambda reads at runtime. There are two ways to populate it.
+
+**Option A — manage them in GitHub (recommended for CI-driven setups).** Add
+any of these as repository secrets and the deploy workflow syncs them into
+Secrets Manager on every run:
+
+| GitHub secret | Secret key |
+|---|---|
+| `SLACK_WEBHOOK_URL` | `slack_webhook_url` |
+| `SLACK_BOT_TOKEN` | `slack_bot_token` |
+| `SPLUNK_TOKEN` | `splunk_token` |
+| `GRAFANA_TOKEN` | `grafana_token` |
+
+Rotating a credential then means updating the GitHub secret and re-running the
+deploy. The sync merges rather than replaces, so keys you manage by hand are
+preserved, and a GitHub secret you haven't set leaves its stored value alone
+instead of blanking it. Note this requires `secretsmanager:PutSecretValue` on
+the deploy identity, and puts the credential in two places — anyone with repo
+admin can change what the Lambda posts with.
+
+**Option B — set them directly against AWS.** Because the secret is a single
+JSON object, a plain `put-secret-value` with one key deletes the others. The
+helper fetches, merges, and writes back:
+
+```bash
+scripts/set_secret.sh slack_webhook_url      # prompts, so nothing hits shell history
+scripts/set_secret.sh splunk_token
+```
+
+Either way, Terraform seeds the secret's shape once and then ignores changes to
+it (`lifecycle { ignore_changes = [secret_string] }`), so values survive future
+applies and never enter Terraform state.
+
+**Slack:** create an app at <https://api.slack.com/apps> → **Incoming Webhooks**
+→ *Add New Webhook to Workspace*, pick the channel, and store the URL as
+`slack_webhook_url`. The channel is fixed when the webhook is created, so
+`SLACK_CHANNEL` is ignored on this path. To route to different channels at
+runtime, store a bot token as `slack_bot_token` instead (scope `chat:write`,
+with the bot invited to the channel) — the code prefers the webhook when both
+are present.
+
+> Secrets are cached for the life of the Lambda container. After rotating one,
+> force a cold start (`aws lambda update-function-configuration --description
+> "rotated $(date -u +%FT%TZ)"`) or wait for the container to recycle.
+
 ---
 
 ## CI/CD
@@ -124,10 +172,14 @@ Configure under **Settings → Secrets and variables → Actions**:
 | `AWS_REGION` | secret or variable | Target region |
 | `TF_STATE_BUCKET` | secret or variable | Terraform remote state bucket |
 | `LAMBDA_ARTIFACT_BUCKET` | secret or variable | Deployment zip destination |
+| `SLACK_WEBHOOK_URL` | secret | Optional — synced into Secrets Manager on deploy |
+| `SLACK_BOT_TOKEN` / `SPLUNK_TOKEN` / `GRAFANA_TOKEN` | secret | Optional — same sync |
 
-The last three are not sensitive, so either kind works — every reference reads
-`secrets.X` and falls back to `vars.X`. Also commit a non-sensitive
-`terraform/prod.tfvars` (copy the example).
+`AWS_REGION` and the two bucket names are not sensitive, so either kind works —
+every reference reads `secrets.X` and falls back to `vars.X`. The credentials in
+the last two rows are pushed into Secrets Manager during deploy (see *Setting
+credentials* below); omit them to manage those values directly in AWS instead.
+Also commit a non-sensitive `terraform/prod.tfvars` (copy the example).
 
 The deploy identity needs permission to manage everything in `terraform/`
 (Lambda, IAM, EventBridge, SQS, S3, SNS, Secrets Manager, CloudWatch) plus
