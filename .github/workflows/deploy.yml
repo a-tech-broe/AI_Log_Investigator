@@ -113,12 +113,15 @@ jobs:
             exit 1
           fi
 
+      # -var-file comes first on purpose: Terraform applies -var and -var-file
+      # in command-line order, so the explicit flags below win over anything the
+      # tfvars file happens to set for region or environment.
       - name: Plan
         run: |
           terraform -chdir=terraform plan -input=false -out=tfplan \
+            -var-file="${TF_ENVIRONMENT}.tfvars" \
             -var="environment=${TF_ENVIRONMENT}" \
-            -var="aws_region=${AWS_REGION}" \
-            -var-file="${TF_ENVIRONMENT}.tfvars"
+            -var="aws_region=${AWS_REGION}"
 
       - name: Render plan summary
         run: |
