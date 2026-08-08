@@ -435,6 +435,32 @@ exhausting a connection pool, and tasks being OOM-killed with no deployment
 involved — plus the degradation paths: analysis failure, Slack failure, and
 total collector failure.
 
+### Testing a deployed stack
+
+Publish a synthetic Grafana alert to the event bus. This exercises the path a
+real alert takes — rule matching, invocation, collection, Bedrock, Slack —
+unlike a direct `lambda invoke`, which skips the EventBridge rule entirely and
+so cannot tell you whether the rule's event pattern is right.
+
+```bash
+scripts/send_test_alert.sh                        # payment-api, critical
+scripts/send_test_alert.sh checkout-api high
+scripts/send_test_alert.sh payment-api critical resolved   # should be skipped
+```
+
+Then watch it run:
+
+```bash
+aws logs tail "$(terraform -chdir=terraform output -raw log_group_name)" --follow --since 5m
+```
+
+To exercise everything without posting to Slack, deploy with `dry_run = true`
+in your tfvars — the card is built and logged, but not delivered.
+
+A service that doesn't exist in your account is still a useful test: the
+collectors report `available: false`, and you get a degraded report rather than
+a crash. That is the failure path working as designed.
+
 ---
 
 ## Future enhancements

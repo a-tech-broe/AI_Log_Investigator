@@ -85,6 +85,7 @@ module "lambda" {
   environment_variables = {
     ENVIRONMENT             = var.environment
     LOG_LEVEL               = var.log_level
+    DRY_RUN                 = tostring(var.dry_run)
     ECS_CLUSTER             = var.ecs_cluster_name
     ALB_ARN_SUFFIX          = var.alb_arn_suffix
     TARGET_GROUP_ARN_SUFFIX = var.target_group_arn_suffix

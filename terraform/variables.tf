@@ -86,6 +86,12 @@ variable "log_retention_days" {
   default     = 30
 }
 
+variable "dry_run" {
+  description = "Build the Slack card and log it without posting. Useful when testing the pipeline."
+  type        = bool
+  default     = false
+}
+
 variable "log_level" {
   description = "Application log level."
   type        = string
