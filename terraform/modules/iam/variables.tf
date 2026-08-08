@@ -39,6 +39,11 @@ variable "sns_topic_arn" {
   type        = string
 }
 
+variable "dlq_arn" {
+  description = "ARN of the dead-letter queue the function writes async failures to."
+  type        = string
+}
+
 variable "kms_key_arn" {
   description = "Customer-managed KMS key ARN, when one is in use."
   type        = string
