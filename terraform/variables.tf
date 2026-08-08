@@ -59,9 +59,25 @@ variable "lambda_timeout_seconds" {
 }
 
 variable "lambda_reserved_concurrency" {
-  description = "Reserved concurrency. Caps Bedrock spend during an alert storm. -1 disables the limit."
+  description = <<-EOT
+    Reserved concurrency, which caps Bedrock spend during an alert storm.
+
+    -1 (the default) reserves nothing. A reservation is only possible when the
+    account's concurrency limit exceeds the minimum unreserved concurrency AWS
+    enforces — new accounts are often capped at 10 total, which leaves no room
+    to reserve any. Check with:
+
+      aws lambda get-account-settings --query AccountLimit.ConcurrentExecutions
+
+    0 is valid but throttles the function to zero, disabling it entirely.
+  EOT
   type        = number
-  default     = 5
+  default     = -1
+
+  validation {
+    condition     = var.lambda_reserved_concurrency >= -1
+    error_message = "lambda_reserved_concurrency must be -1 (no reservation) or >= 0."
+  }
 }
 
 variable "log_retention_days" {

@@ -32,12 +32,16 @@ ecs_cluster_name = "prod-ecs"
 # slack_channel           = "#incidents"
 # ops_email_subscriptions = ["sre-oncall@example.com"]
 
-# lambda_memory_mb            = 1024
-# lambda_timeout_seconds      = 300
+# lambda_memory_mb       = 1024
+# lambda_timeout_seconds = 300
+# log_retention_days     = 30
+# log_level              = "INFO"
+# lookback_minutes       = 15
+
+# Caps Bedrock spend during an alert storm, but only settable once the account's
+# concurrency limit leaves room above the enforced unreserved minimum. Check
+# with: aws lambda get-account-settings --query AccountLimit.ConcurrentExecutions
 # lambda_reserved_concurrency = 5
-# log_retention_days          = 30
-# log_level                   = "INFO"
-# lookback_minutes            = 15
 
 # Account-wide singleton per region — leave false unless this stack owns it.
 # enable_bedrock_invocation_logging = false
