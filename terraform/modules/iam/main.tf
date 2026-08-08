@@ -110,6 +110,29 @@ data "aws_iam_policy_document" "lambda" {
     actions   = ["sns:Publish"]
     resources = [var.sns_topic_arn]
   }
+
+  # Required by the function's dead_letter_config. Lambda validates this grant
+  # during CreateFunction, so the policy must exist before the function does —
+  # see the depends_on in outputs.tf.
+  statement {
+    sid       = "WriteToDeadLetterQueue"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [var.dlq_arn]
+  }
+
+  # Required by tracing_config mode = "Active". Unlike the DLQ grant this is not
+  # validated at create time — without it tracing silently produces no segments.
+  # X-Ray does not support resource-level permissions for these actions.
+  statement {
+    sid    = "WriteXRayTraces"
+    effect = "Allow"
+    actions = [
+      "xray:PutTraceSegments",
+      "xray:PutTelemetryRecords",
+    ]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda" {

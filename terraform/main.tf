@@ -61,6 +61,7 @@ module "iam" {
   secret_arn          = module.secrets.secret_arn
   evidence_bucket_arn = module.s3.bucket_arn
   sns_topic_arn       = module.sns.topic_arn
+  dlq_arn             = module.eventbridge.dlq_arn
   kms_key_arn         = var.kms_key_arn
 }
 
