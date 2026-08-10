@@ -4,8 +4,9 @@ VENV := .venv
 PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 TF_DIR := terraform
+ENV ?= prod
 
-.PHONY: help venv install lint fmt test coverage build clean tf-init tf-fmt tf-validate tf-plan tf-apply check
+.PHONY: help venv install lint fmt test coverage build clean tf-init tf-fmt tf-validate tf-plan tf-apply check teardown teardown-plan
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -51,6 +52,12 @@ tf-plan: build ## terraform plan
 tf-apply: ## terraform apply the saved plan
 	terraform -chdir=$(TF_DIR) apply tfplan
 
-clean: ## Remove build and cache artifacts
+teardown-plan: ## Show what a teardown would destroy (changes nothing)
+	./scripts/teardown.sh $(ENV) --plan
+
+teardown: ## Destroy the deployed stack (prompts for confirmation)
+	./scripts/teardown.sh $(ENV)
+
+clean: ## Remove local build and cache artifacts
 	rm -rf build .pytest_cache .ruff_cache .coverage htmlcov coverage.xml
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +

@@ -1,0 +1,125 @@
+name: Teardown
+
+# Destroys a deployed environment. Manual dispatch only — there is deliberately
+# no push trigger, so this can never fire from a merge.
+#
+# Two gates: the `confirm` input must match the chosen environment, and the
+# destroy job runs in the `production` Environment, so its required reviewers
+# apply here exactly as they do for deploy.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to destroy
+        type: choice
+        options: [staging, prod]
+        default: staging
+      confirm:
+        description: Type the environment name again to confirm
+        type: string
+        required: true
+      purge_secret:
+        description: Delete the secret immediately (no 7-day recovery window)
+        type: boolean
+        default: false
+
+concurrency:
+  group: teardown-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TERRAFORM_VERSION: "1.14.3"
+  TF_ENVIRONMENT: ${{ inputs.environment }}
+
+jobs:
+  plan:
+    name: Plan destroy
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION || vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET || vars.TF_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Confirm the environment name matches
+        run: |
+          if [ "${{ inputs.confirm }}" != "${TF_ENVIRONMENT}" ]; then
+            echo "::error::Confirmation '${{ inputs.confirm }}' does not match environment '${TF_ENVIRONMENT}'."
+            exit 1
+          fi
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Init
+        run: |
+          terraform -chdir=terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=ai-log-investigator/${TF_ENVIRONMENT}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Plan destroy
+        run: ./scripts/teardown.sh "${TF_ENVIRONMENT}" --plan
+
+      - name: Summary
+        run: |
+          {
+            echo "### Teardown planned for \`${TF_ENVIRONMENT}\`"
+            echo "Approve the **destroy** job to proceed. Archived investigations will be deleted."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  destroy:
+    name: Destroy
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: production # required reviewers gate this job
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION || vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET || vars.TF_STATE_BUCKET }}
+      AUTO_APPROVE: "true" # the workflow inputs and approval gate are the confirmation
+      PURGE_SECRET: ${{ inputs.purge_secret }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Init
+        run: |
+          terraform -chdir=terraform init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=ai-log-investigator/${TF_ENVIRONMENT}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Destroy
+        run: ./scripts/teardown.sh "${TF_ENVIRONMENT}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Destroyed \`${TF_ENVIRONMENT}\`"
+            echo "Still present (not managed by this stack): Terraform state bucket,"
+            echo "Lambda artifact bucket, and any Bedrock model access."
+          } >> "$GITHUB_STEP_SUMMARY"

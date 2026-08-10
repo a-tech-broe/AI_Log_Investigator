@@ -463,6 +463,39 @@ a crash. That is the failure path working as designed.
 
 ---
 
+## Teardown
+
+`terraform destroy` on its own **fails** here: the evidence bucket is versioned
+with `force_destroy = false`, so Terraform hits `BucketNotEmpty` and leaves the
+stack half-destroyed. Use the teardown script, which empties the bucket (every
+version *and* delete marker) before destroying.
+
+```bash
+make teardown-plan            # show what would go; changes nothing
+make teardown                 # destroy prod, with a typed confirmation
+make teardown ENV=staging
+```
+
+| Variable | Effect |
+|---|---|
+| `AUTO_APPROVE=true` | Skip the typed confirmation (used by CI) |
+| `KEEP_EVIDENCE=true` | Don't empty the bucket — destroy will fail if it holds objects |
+| `PURGE_SECRET=true` | Delete the secret immediately instead of leaving a 7-day recovery window |
+
+The recovery window matters if you plan to redeploy: Terraform *schedules* the
+secret for deletion, which keeps the name reserved, and a redeploy inside that
+window fails. Pass `PURGE_SECRET=true` when tearing down to rebuild.
+
+There's also a manual-dispatch **Teardown** workflow. It requires typing the
+environment name as a second input and runs the destroy behind the same
+`production` approval gate as deploy. There is no push trigger, so it can never
+fire from a merge.
+
+**Not removed**, because this stack doesn't own them: the Terraform state
+bucket, the Lambda artifact bucket, and any Bedrock model access you requested.
+
+To clear only local build and cache artifacts, use `make clean`.
+
 ## Future enhancements
 
 * AI-generated Splunk SPL from natural language (for example, "show all
