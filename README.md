@@ -491,6 +491,11 @@ environment name as a second input and runs the destroy behind the same
 `production` approval gate as deploy. There is no push trigger, so it can never
 fire from a merge.
 
+Tearing down an environment that was never deployed is a clean no-op: the
+script checks for resources in state first and exits 0 rather than failing.
+A missing `<env>.tfvars` is also fine — variable values don't affect what gets
+destroyed, since Terraform works from state.
+
 **Not removed**, because this stack doesn't own them: the Terraform state
 bucket, the Lambda artifact bucket, and any Bedrock model access you requested.
 

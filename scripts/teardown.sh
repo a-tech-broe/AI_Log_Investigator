@@ -34,23 +34,45 @@ if ! $TF providers >/dev/null 2>&1; then
   exit 1
 fi
 
-tf_output() { $TF output -raw "$1" 2>/dev/null || true; }
+# Nothing in state means this environment was never deployed (or is already
+# gone). That is success, not failure — exit cleanly so CI stays green.
+RESOURCE_COUNT="$($TF state list 2>/dev/null | grep -c . || true)"
+if [ "${RESOURCE_COUNT:-0}" -eq 0 ]; then
+  echo "Nothing to tear down: no resources in state for '${ENVIRONMENT}'."
+  exit 0
+fi
+
+# Read outputs as JSON. `output -raw` prints its "No outputs found" warning on
+# stdout, which would otherwise be captured as the value itself.
+OUTPUTS="$($TF output -json 2>/dev/null || echo '{}')"
+echo "$OUTPUTS" | jq empty >/dev/null 2>&1 || OUTPUTS='{}'
+tf_output() { echo "$OUTPUTS" | jq -r --arg k "$1" '.[$k].value // empty'; }
 
 # Capture what we need before the state is gone.
 BUCKET="$(tf_output evidence_bucket)"
 SECRET_ARN="$(tf_output secret_arn)"
 FUNCTION="$(tf_output lambda_function_name)"
 
+# Variable values do not affect what gets destroyed — Terraform works from
+# state — but the config must still evaluate, and ecs_cluster_name has no
+# default. Use the environment's tfvars when present, else a placeholder.
+VAR_ARGS=(-var="environment=${ENVIRONMENT}")
+if [ -f "$ROOT/terraform/${ENVIRONMENT}.tfvars" ]; then
+  VAR_ARGS=(-var-file="${ENVIRONMENT}.tfvars" "${VAR_ARGS[@]}")
+else
+  echo "note: terraform/${ENVIRONMENT}.tfvars not found; supplying placeholders."
+  VAR_ARGS+=(-var="ecs_cluster_name=unused-during-destroy")
+fi
+
 echo "Environment : ${ENVIRONMENT}"
+echo "Resources   : ${RESOURCE_COUNT} in state"
 echo "Function    : ${FUNCTION:-<none>}"
 echo "Bucket      : ${BUCKET:-<none>}"
 echo "Secret      : ${SECRET_ARN:-<none>}"
 echo
 
 echo "==> Planning destroy"
-$TF plan -destroy -input=false \
-  -var-file="${ENVIRONMENT}.tfvars" \
-  -var="environment=${ENVIRONMENT}"
+$TF plan -destroy -input=false "${VAR_ARGS[@]}"
 
 if [ "$MODE" = "--plan" ]; then
   echo
@@ -114,9 +136,7 @@ fi
 # --- Destroy ------------------------------------------------------------------
 
 echo "==> Destroying"
-$TF destroy -input=false -auto-approve \
-  -var-file="${ENVIRONMENT}.tfvars" \
-  -var="environment=${ENVIRONMENT}"
+$TF destroy -input=false -auto-approve "${VAR_ARGS[@]}"
 
 # --- Post-destroy -------------------------------------------------------------
 
